@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Generador TMDb Películas y Series</title>
+<style>
+  body {
+    background: #121212;
+    color: #eee;
+    font-family: Arial, sans-serif;
+    padding: 20px;
+    max-width: 900px;
+    margin: auto;
+  }
+  h1 {
+    text-align: center;
+    margin-bottom: 1rem;
+  }
+  input[type=text], input[type=number], select, button {
+    padding: 8px;
+    margin: 6px 0;
+    width: 100%;
+    max-width: 400px;
+    box-sizing: border-box;
+    border-radius: 4px;
+    border: none;
+    font-size: 1rem;
+  }
+  label {
+    margin-top: 1rem;
+    display: block;
+  }
+  .results {
+    margin-top: 1rem;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #222;
+  }
+  .result-item {
+    padding: 10px;
+    border-bottom: 1px solid #444;
+    cursor: pointer;
+  }
+  .result-item:hover {
+    background: #333;
+  }
+  textarea {
+    width: 100%;
+    height: 250px;
+    margin-top: 1rem;
+    background: #222;
+    color: #eee;
+    border: none;
+    border-radius: 6px;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 0.9rem;
+    resize: vertical;
+  }
+  .episodes-list {
+    margin-top: 10px;
+    background: #222;
+    padding: 10px;
+    border-radius: 4px;
+  }
+  .episode-item {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .episode-item input[type=text] {
+    flex: 1;
+  }
+  .btn {
+    cursor: pointer;
+    background: #0a84ff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-weight: bold;
+    margin-top: 8px;
+    transition: background-color 0.3s ease;
+  }
+  .btn:hover {
+    background: #0663c9;
+  }
+  .hidden {
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<h1>Generador TMDb Películas y Series</h1>
+
+<label for="search-type">Selecciona tipo:</label>
+<select id="search-type">
+  <option value="movie">Película</option>
+  <option value="tv">Serie</option>
+</select>
+
+<label for="search-input">Buscar título (en tiempo real):</label>
+<input type="text" id="search-input" placeholder="Escribe para buscar..." autocomplete="off" />
+
+<label for="search-id">O buscar por ID TMDb:</label>
+<input type="text" id="search-id" placeholder="Ingresa ID TMDb" autocomplete="off" />
+<button id="search-id-btn" class="btn" style="max-width: 150px;">Buscar por ID</button>
+
+<div class="results" id="results"></div>
+
+<div id="selected-info" class="hidden">
+  <h2>Seleccionado:</h2>
+  <div id="info"></div>
+  
+  <!-- Aquí la URL para opción de video en películas -->
+  <div id="movie-option" class="hidden">
+    <label for="option-url">URL Opción de video (Películas):</label>
+    <input type="text" id="option-url" placeholder="https://tuvideo.com/miopcion" />
+  </div>
+
+  <!-- Para series: secciones para temporadas y episodios -->
+  <div id="series-episodes" class="hidden">
+    <h3>Agregar temporadas y episodios</h3>
+    <label for="season-number">Número de temporada:</label>
+    <input type="number" id="season-number" min="1" value="1" />
+    
+    <div id="episodes-container" class="episodes-list">
+      <h4>Episodios temporada <span id="current-season-label">1</span></h4>
+      <div id="episodes-list"></div>
+      <button type="button" id="add-episode-btn" class="btn">Agregar episodio (solo URL)</button>
+    </div>
+    <button type="button" id="add-season-btn" class="btn">Guardar temporada</button>
+  </div>
+
+  <button id="generate-btn" class="btn">Generar HTML</button>
+</div>
+
+<label for="output-html">HTML generado:</label>
+<textarea id="output-html" readonly></textarea>
+<button id="copy-btn" class="btn" style="max-width: 150px;">Copiar HTML</button>
+
+<script>
+const apiKey = '867b27ebb5a72c3f64ee67bc9dd7a794';
+
+const searchTypeSelect = document.getElementById('search-type');
+const searchInput = document.getElementById('search-input');
+const searchIdInput = document.getElementById('search-id');
+const searchIdBtn = document.getElementById('search-id-btn');
+const resultsDiv = document.getElementById('results');
+const selectedInfo = document.getElementById('selected-info');
+const infoDiv = document.getElementById('info');
+const outputHTML = document.getElementById('output-html');
+const copyBtn = document.getElementById('copy-btn');
+
+const movieOptionDiv = document.getElementById('movie-option');
+const optionUrlInput = document.getElementById('option-url');
+
+const seriesEpisodesDiv = document.getElementById('series-episodes');
+const seasonNumberInput = document.getElementById('season-number');
+const episodesListDiv = document.getElementById('episodes-list');
+const currentSeasonLabel = document.getElementById('current-season-label');
+const addEpisodeBtn = document.getElementById('add-episode-btn');
+const addSeasonBtn = document.getElementById('add-season-btn');
+
+let searchTimeout = null;
+let selectedItem = null;
+let seasonsData = []; // [{season:1, episodes:[{title, url}]}]
+let genresMap = {};
+
+// Cargar géneros y mapear ID a nombre
+async function loadGenres(type) {
+  const url = `https://api.themoviedb.org/3/genre/${type}/list?api_key=${apiKey}&language=es-ES`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if(data.genres){
+    genresMap = {};
+    data.genres.forEach(g => {
+      genresMap[g.id] = g.name;
+    });
+  }
+}
+
+// Convertir array de IDs a nombres separados por coma
+function genresToNames(ids){
+  return ids.map(id => genresMap[id] || id).join(', ');
+}
+
+// Buscar TMDb por título
+async function searchTMDb(query, type) {
+  if (!query.trim()) {
+    resultsDiv.innerHTML = '';
+    return;
+  }
+  try {
+    const url = `https://api.themoviedb.org/3/search/${type}?api_key=${apiKey}&language=es-ES&query=${encodeURIComponent(query)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if(data.results){
+      showResults(data.results, type);
+    }
+  } catch (e) {
+    resultsDiv.innerHTML = `<p>Error al buscar: ${e.message}</p>`;
+  }
+}
+
+// Buscar TMDb por ID
+async function searchById(id, type) {
+  try {
+    const url = `https://api.themoviedb.org/3/${type}/${id}?api_key=${apiKey}&language=es-ES`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('ID no encontrado');
+    const data = await res.json();
+    // Para el objeto de episodios en series puede no tener genre_ids, se obtiene de genres
+    if(type === 'tv' && data.genres) data.genre_ids = data.genres.map(g => g.id);
+    else if(type === 'movie' && data.genres) data.genre_ids = data.genres.map(g => g.id);
+    showResults([data], type, true);
+  } catch (e) {
+    alert('Error al buscar por ID: ' + e.message);
+  }
+}
+
+// Mostrar resultados (o resultado único si por ID)
+function showResults(items, type, byId = false) {
+  if (!items.length) {
+    resultsDiv.innerHTML = '<p>No hay resultados</p>';
+    return;
+  }
+  resultsDiv.innerHTML = '';
+  items.forEach(item => {
+    const div = document.createElement('div');
+    div.classList.add('result-item');
+    div.textContent = `${item.title || item.name} (${(item.release_date || item.first_air_date || '').slice(0,4) || '----'})`;
+    div.onclick = () => selectItem(item, type);
+    resultsDiv.appendChild(div);
+  });
+  if(byId){
+    // Selecciona automáticamente el único resultado por ID
+    selectItem(items[0], type);
+  }
+}
+
+// Al seleccionar un ítem
+async function selectItem(item, type) {
+  selectedItem = item;
+  resultsDiv.innerHTML = '';
+  searchInput.value = item.title || item.name;
+  searchIdInput.value = '';
+  selectedInfo.classList.remove('hidden');
+
+  seasonsData = [];
+
+  // Cargar géneros para el tipo
+  await loadGenres(type);
+  const genreNames = genresToNames(item.genre_ids || []);
+
+  const title = item.title || item.name;
+  const year = (item.release_date || item.first_air_date || '').slice(0,4) || '';
+  const ratingRaw = selectedItem.vote_average || 0;
+  const rating = ratingRaw.toFixed(1);
+  const overview = item.overview || '';
+  const imgBig = item.backdrop_path ? `https://image.tmdb.org/t/p/w1280${item.backdrop_path}` : '';
+  const imgSmall = item.poster_path ? `https://image.tmdb.org/t/p/w300${item.poster_path}` : '';
+
+  let infoHTML = '';
+
+  if(type === 'movie'){
+    infoHTML += `
+<!--
+Nombre de la Película: ${title} - ${year}
+GÉNEROS/ETIQUETAS: ${genreNames}, Película Latino, 2024, ${imgBig}, Pelicula 
+-->
+[stt/Película]
+[hd/Latino]
+[sc/${rating}]
+<span><!--more--></span>
+<img alt="${title}" src="${imgSmall}" style="display: none;" />
+<p>
+[ss]
+[Trailer;https://www.youtube.com/embed/VIDEOID*]
+[/ss]
+[nd]
+${overview}
+[/nd]
+<id>
+[br/Ver ahora]
+[Opción 1|https://tuvideo-aqui]
+</id>
+    `;
+    movieOptionDiv.classList.remove('hidden');
+    optionUrlInput.value = '';
+    seriesEpisodesDiv.classList.add('hidden');
+  } else if(type === 'tv'){
+    infoHTML += `
+<!--
+TITULO DE LA ENTRADA: ${title.toUpperCase()} - ${year}
+GENEROS/ETIQUETAS: ${genreNames}, Imagen de fondo ${imgBig}, Series
+-->
+[stt/Serie]
+[hd/Latino]
+[sc/${rating}]
+<span class='temp+'><!--more-->0 Temporada(s)</span>
+<img alt="${title}" src="${imgSmall}" style="display: none;" />
+<p>
+[ss]
+[Trailer;https://www.youtube.com/embed/VIDEOID*]
+[/ss]
+[nd]
+${overview}
+[/nd]
+<!--Lista de Episodios-->
+<div class="season-list add-on hidden">
+<div class="select-season">
+<h2>Episodios</h2>
+<select name="" id="select-season">
+<!-- temporadas se agregarán aquí -->
+</select>
+</div>
+<div id="temps">
+<!-- episodios se agregarán aquí -->
+</div>
+</div>
+    `;
+    movieOptionDiv.classList.add('hidden');
+    seriesEpisodesDiv.classList.remove('hidden');
+    seasonNumberInput.value = 1;
+    currentSeasonLabel.textContent = '1';
+    episodesListDiv.innerHTML = '';
+  }
+
+  infoDiv.innerHTML = infoHTML;
+  outputHTML.value = '';
+}
+
+// Añadir episodio (solo URL)
+function addEpisode() {
+  const div = document.createElement('div');
+  div.classList.add('episode-item');
+  div.innerHTML = `
+    <input type="text" placeholder="URL video (YouTube embed o directo)" class="episode-url" />
+    <button type="button" class="btn remove-episode">Eliminar</button>
+  `;
+  episodesListDiv.appendChild(div);
+
+  div.querySelector('.remove-episode').onclick = () => {
+    div.remove();
+  }
+}
+
+// Guardar temporada con numeración automática
+function saveSeason() {
+  const seasonNum = parseInt(seasonNumberInput.value);
+  if(isNaN(seasonNum) || seasonNum < 1){
+    alert('Número de temporada inválido');
+    return;
+  }
+
+  const episodeDivs = [...episodesListDiv.querySelectorAll('.episode-item')];
+  const episodes = [];
+
+  for(let i=0; i<episodeDivs.length; i++){
+    const div = episodeDivs[i];
+    const urlInput = div.querySelector('.episode-url');
+    if(urlInput.value.trim() === ''){
+      alert('Por favor completa todas las URLs de episodios');
+      return;
+    }
+    episodes.push({
+      title: `Episodio ${i+1}`, // título automático
+      url: urlInput.value.trim()
+    });
+  }
+
+  const existingIndex = seasonsData.findIndex(s => s.season === seasonNum);
+  if(existingIndex !== -1){
+    seasonsData[existingIndex].episodes = episodes;
+  } else {
+    seasonsData.push({season: seasonNum, episodes});
+  }
+
+  alert(`Temporada ${seasonNum} guardada con ${episodes.length} episodios.`);
+
+  // Preparamos para próxima temporada
+  seasonNumberInput.value = seasonNum + 1;
+  currentSeasonLabel.textContent = (seasonNum + 1).toString();
+  episodesListDiv.innerHTML = '';
+}
+
+// Generar el HTML final (con URL de opción en película o temporadas/episodios en serie)
+function generateHTML() {
+  if(!selectedItem){
+    alert('Selecciona una película o serie primero');
+    return;
+  }
+  const type = searchTypeSelect.value;
+  const title = selectedItem.title || selectedItem.name;
+  const year = (selectedItem.release_date || selectedItem.first_air_date || '').slice(0,4) || '';
+  const ratingRaw = selectedItem.vote_average || 0;
+  const rating = ratingRaw.toFixed(1);
+  const overview = selectedItem.overview || '';
+  const genreNames = genresToNames(selectedItem.genre_ids || []);
+  const imgBig = selectedItem.backdrop_path ? `https://image.tmdb.org/t/p/w1280${selectedItem.backdrop_path}` : '';
+  const imgSmall = selectedItem.poster_path ? `https://image.tmdb.org/t/p/w300${selectedItem.poster_path}` : '';
+
+  const trailerUrl = 'https://www.youtube.com/embed/VIDEOID'; // Puedes extender para ingresar trailer si quieres
+
+  if(type === 'movie'){
+    let optionUrl = optionUrlInput.value.trim();
+    if(!optionUrl){
+      alert('Por favor ingresa la URL de opción de video para la película.');
+      return;
+    }
+    let html = `
+<!--
+Nombre de la Película: ${title} - ${year}
+GÉNEROS/ETIQUETAS: ${genreNames}, Película Latino, 2024 ,${imgBig}, Película 
+-->
+[stt/Película]
+[hd/Latino]
+[sc/${rating}]
+<span><!--more--></span>
+<img alt="${title}" src="${imgSmall}" style="display: none;" />
+<p>
+[ss]
+[Trailer;${trailerUrl}*]
+[/ss]
+[nd]
+${overview}
+[/nd]
+<id>
+[br/Ver ahora]
+[Opción 1|${optionUrl}]
+</id>
+    `;
+    outputHTML.value = html.trim();
+  } else if(type === 'tv'){
+    const tempCount = seasonsData.length;
+    let selectOptions = '';
+    let seasonsHTML = '';
+
+    seasonsData.sort((a,b)=>a.season - b.season);
+
+    // Construir opciones y UL con episodios por temporada según formato dado
+    seasonsData.forEach((seasonObj, idx) => {
+      const season = seasonObj.season;
+      selectOptions += `<option value="${season}">Temporada ${season}</option>\n`;
+      
+      seasonsHTML += `<ul class="caps-grid ${season === 1 ? 'animation' : 'hide'}" id="season-${season}">\n<id>\n[br/Episodios temporada ${season}]\n`;
+
+      seasonObj.episodes.forEach((ep, i) => {
+        // Numeración global continua
+        const globalEpNum = seasonsData.slice(0, idx).reduce((acc, s) => acc + s.episodes.length, 0) + (i + 1);
+        seasonsHTML += `[Episodio ${globalEpNum}|${ep.url}]\n`;
+      });
+
+      seasonsHTML += `</id>\n</ul>\n`;
+    });
+
+    const html = `
+<!--
+TITULO DE LA ENTRADA: ${title.toUpperCase()} - ${year}
+GENEROS/ETIQUETAS: ${genreNames}, Imagen de fondo ${imgBig}, Series
+-->
+[stt/Serie]
+[hd/Latino]
+[sc/${rating}]
+<span class='temp+'><!--more-->${tempCount} Temporada${tempCount !== 1 ? 's' : ''}</span>
+<img alt="${title}" src="${imgSmall}" style="display: none;" />
+<p>
+[ss]
+[Trailer;${trailerUrl}*]
+[/ss]
+[nd]
+${overview}
+[/nd]
+<!--Lista de Episodios-->
+<div class="season-list add-on hidden">
+<div class="select-season">
+<h2>Episodios</h2>
+<select name="" id="select-season">
+${selectOptions}
+</select>
+</div>
+<div id="temps">
+${seasonsHTML}
+</div>
+</div>
+    `;
+
+    outputHTML.value = html.trim();
+  }
+}
+
+// Copiar HTML generado al portapapeles
+copyBtn.addEventListener('click', () => {
+  const html = outputHTML.value.trim();
+  if (!html) {
+    alert('No hay HTML generado para copiar.');
+    return;
+  }
+  navigator.clipboard.writeText(html).then(() => {
+    alert('HTML copiado al portapapeles.');
+  }).catch(() => {
+    alert('Error al copiar al portapapeles.');
+  });
+});
+
+// Control para agregar episodios
+addEpisodeBtn.addEventListener('click', () => {
+  addEpisode();
+});
+
+// Control para guardar temporada
+addSeasonBtn.addEventListener('click', () => {
+  saveSeason();
+});
+
+// Cambiar etiqueta de temporada al cambiar número en input
+seasonNumberInput.addEventListener('input', () => {
+  const val = parseInt(seasonNumberInput.value);
+  if (!isNaN(val) && val > 0) {
+    currentSeasonLabel.textContent = val.toString();
+    // Limpiar episodios para nueva temporada
+    episodesListDiv.innerHTML = '';
+    // Si existe temporada guardada, cargar episodios
+    const existing = seasonsData.find(s => s.season === val);
+    if (existing) {
+      existing.episodes.forEach(ep => {
+        const div = document.createElement('div');
+        div.classList.add('episode-item');
+        div.innerHTML = `
+          <input type="text" placeholder="URL video (YouTube embed o directo)" class="episode-url" value="${ep.url}" />
+          <button type="button" class="btn remove-episode">Eliminar</button>
+        `;
+        episodesListDiv.appendChild(div);
+        div.querySelector('.remove-episode').onclick = () => div.remove();
+      });
+    }
+  }
+});
+
+// Búsqueda por título con delay (tiempo real)
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchTimeout);
+  const q = searchInput.value.trim();
+  const type = searchTypeSelect.value;
+  if (q.length < 3) {
+    resultsDiv.innerHTML = '';
+    return;
+  }
+  searchTimeout = setTimeout(() => {
+    searchTMDb(q, type);
+  }, 400);
+});
+
+// Búsqueda por ID al hacer click en botón
+searchIdBtn.addEventListener('click', () => {
+  const id = searchIdInput.value.trim();
+  const type = searchTypeSelect.value;
+  if (!id) {
+    alert('Ingresa un ID TMDb válido');
+    return;
+  }
+  searchById(id, type);
+});
+
+// Cambiar tipo limpia resultados y campos
+searchTypeSelect.addEventListener('change', () => {
+  resultsDiv.innerHTML = '';
+  selectedInfo.classList.add('hidden');
+  outputHTML.value = '';
+  searchInput.value = '';
+  searchIdInput.value = '';
+  seasonsData = [];
+  episodesListDiv.innerHTML = '';
+  movieOptionDiv.classList.add('hidden');
+  seriesEpisodesDiv.classList.add('hidden');
+});
+
+// Generar HTML al hacer click
+document.getElementById('generate-btn').addEventListener('click', generateHTML);
+
+// Inicializa con el primer episodio para temporadas
+addEpisode();
+
+</script>
+</body>
+</html>
+  
+  
+  <!--buscador de episodios-->
+    
+  <!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>🎬 Generador de Episodios - InkaFlix</title>
+  <style>
+    body {
+      background: #0e0e0e;
+      color: #fff;
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      font-size: 28px;
+      color: #ff4141;
+      margin-bottom: 20px;
+    }
+    label {
+      font-weight: 600;
+      display: block;
+      margin-top: 10px;
+    }
+    input, select, button, textarea {
+      padding: 10px;
+      margin-top: 6px;
+      width: 100%;
+      border-radius: 8px;
+      border: none;
+      font-size: 15px;
+      box-sizing: border-box;
+    }
+    input, select, textarea {
+      background: #1e1e1e;
+      color: #fff;
+    }
+    textarea {
+      height: 300px;
+      font-family: monospace;
+      resize: vertical;
+    }
+    button {
+      background: #ff4141;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+      margin-top: 15px;
+      transition: background 0.2s ease;
+    }
+    button:hover {
+      background: #e73737;
+    }
+    #results {
+      margin-top: 10px;
+    }
+    .result-item {
+      background: #1e1e1e;
+      padding: 8px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      margin-bottom: 8px;
+      transition: background 0.2s ease;
+    }
+    .result-item:hover {
+      background: #2a2a2a;
+    }
+    .result-item img {
+      width: 60px;
+      height: auto;
+      margin-right: 10px;
+      border-radius: 6px;
+    }
+    .preview-image {
+      margin-top: 10px;
+      max-width: 100%;
+      border-radius: 10px;
+      border: 2px solid #ff4141;
+      box-shadow: 0 0 10px #ff4141;
+    }
+  </style>
+</head>
+<body>
+
+<h1>🎬 Generador de Episodios - InkaFlix</h1>
+
+<input type="text" id="search" placeholder="🔍 Buscar anime..." />
+<div id="results"></div>
+
+<div class="generator">
+  <img id="preview" class="preview-image" src="" alt="Vista previa">
+  
+  <label>📺 Temporada:</label>
+  <input type="number" id="season" value="1">
+  
+  <label>🎞️ Episodio:</label>
+  <input type="number" id="episode" value="1">
+  
+  <label>🌐 Idioma:</label>
+  <select id="language">
+    <option value="Latino">Latino</option>
+    <option value="Subtitulado">Subtitulado</option>
+    <option value="Latino-Subtitulado">Latino-Subtitulado</option>
+    <option value="Español">Español</option>
+    <option value="Japonés">Japonés</option>
+    <option value="Dual">Dual</option>
+  </select>
+  
+  <label>🔗 URL del Episodio:</label>
+  <input type="text" id="url" placeholder="https://...">
+
+  <label>✍️ Nombre del Generador:</label>
+  <input type="text" id="creator" value="inkaflix">
+
+  <button onclick="generate()">⚙️ Generar Código</button>
+</div>
+
+<h3>📝 Resultado:</h3>
+<textarea id="output" readonly></textarea>
+<button onclick="copyToClipboard()">📋 Copiar Código</button>
+
+<script>
+  const API_KEY = '867b27ebb5a72c3f64ee67bc9dd7a794';
+  let selectedTV = null;
+
+  document.getElementById("search").addEventListener("input", async function () {
+    const query = this.value.trim();
+    if (!query) {
+      document.getElementById("results").innerHTML = "";
+      return;
+    }
+
+    const res = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${API_KEY}&query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+
+    let html = "";
+    data.results.forEach(tv => {
+      const img = tv.backdrop_path
+        ? `https://image.tmdb.org/t/p/w500${tv.backdrop_path}`
+        : "https://github.com/inkaflix/API/blob/main/file_00000000b08c61f7b428b89f821779e7.png?raw=true";
+      html += `
+        <div class="result-item" onclick="selectTV(${tv.id}, '${img.replace(/'/g, "\\'")}', '${tv.name.replace(/'/g, "\\'")}')">
+          <img src="${img}" alt="${tv.name}">
+          <span>${tv.name}</span>
+        </div>
+      `;
+    });
+
+    document.getElementById("results").innerHTML = html;
+  });
+
+  function selectTV(tvId, img, title) {
+    selectedTV = { id: tvId, title: title };
+    document.getElementById("preview").src = img;
+    document.getElementById("preview").alt = title;
+    document.getElementById("search").value = title;
+    document.getElementById("results").innerHTML = "";
+  }
+
+  async function generate() {
+    const season = document.getElementById("season").value;
+    const episode = document.getElementById("episode").value;
+    const language = document.getElementById("language").value;
+    const url = document.getElementById("url").value;
+    const creator = document.getElementById("creator").value;
+
+    let episodeImage = document.getElementById("preview").src;
+    let title = document.getElementById("preview").alt;
+    let episodeTitle = "Nombre no encontrado";
+
+    if (selectedTV) {
+      const episodeRes = await fetch(`https://api.themoviedb.org/3/tv/${selectedTV.id}/season/${season}/episode/${episode}?api_key=${API_KEY}`);
+      const episodeData = await episodeRes.json();
+
+      if (episodeData.still_path) {
+        episodeImage = `https://image.tmdb.org/t/p/w500${episodeData.still_path}`;
+      }
+      if (episodeData.name) {
+        episodeTitle = episodeData.name;
+      }
+    }
+
+    const code = `
+<div class="is-episode">
+  <div class="episode-image">
+    <img src="${episodeImage}" alt="${title} ${season}x${episode}"/>
+  </div>
+  <div class="episode-metadata">
+    <div class="season-number">${season}</div>
+    <div class="episode-number">${episode}</div>
+    <div class="episode-language">${language}</div>
+    <div class="redirect-url">${url}</div>
+  </div>
+</div>
+<!-- Generado por: ${creator} -->
+<!-- Nombre del episodio: ${episodeTitle} -->
+`.trim();
+
+    document.getElementById("output").value = code;
+  }
+
+  function copyToClipboard() {
+    const textArea = document.getElementById("output");
+    textArea.select();
+    document.execCommand("copy");
+    alert("✅ Código copiado al portapapeles");
+  }
+</script>
+
+</body>
+</html>
